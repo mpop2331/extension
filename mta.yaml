@@ -1,0 +1,177 @@
+_schema-version: '3.2'
+ID: test1
+version: 0.0.1
+
+parameters:
+  enable-parallel-deployments: true
+
+build-parameters:
+  before-all:
+    - builder: custom
+      commands:
+        - npm install --production
+        - npx -p @sap/cds-dk cds build --production
+
+modules:
+
+
+  # --------------------- SERVER MODULE ------------------------
+  - name: test1-srv
+  # ------------------------------------------------------------
+    type: nodejs
+    path: gen/srv
+    build-parameters:
+      ignore:
+        - default-*.json
+        - .env
+        - "*node_modules*"
+        - package-lock.json
+    parameters:
+      buildpack: nodejs_buildpack
+      memory: 512M
+      disk-quota: 1024M
+    requires:
+      - name: test1-uaa
+      - name: test1-dest
+      - name: test1-registry
+      - name: test1-sm
+      - name: app-api
+        properties:
+          APP_PROTOCOL: ~{app-protocol}
+          APP_URI: ~{app-uri}
+    provides:
+      - name: srv-api
+        properties:
+          srv-url: ${default-url}
+      - name: mtx-api
+        properties:
+          mtx-url: ${default-url}
+
+
+
+
+  # ------------------ APP ROUTER MODULE -----------------------
+  - name: test1-app
+  # ------------------------------------------------------------
+    type: approuter.nodejs
+    path: app
+    build-parameters:
+      ignore:
+        - default-*.json
+        - .env
+        - "*node_modules*"
+        - package-lock.json
+    parameters:
+      memory: 256M
+      disk-quota: 1024M
+      keep-existing-routes: true
+    properties:
+      TENANT_HOST_PATTERN: '^(.*)-${default-uri}'
+    requires:
+      - name: test1-uaa
+      - name: srv-api
+        group: destinations
+        properties:
+          name: srv
+          url: ~{srv-url}
+          timeout: 600000
+          forwardAuthToken: true
+      - name: mtx-api
+        group: destinations
+        properties:
+          name: mtx
+          url: ~{mtx-url}
+          timeout: 600000
+    provides:
+      - name: app-api
+        properties:
+          app-protocol: ${protocol}
+          app-uri: ${default-uri}
+
+
+resources:
+  # ----------------------- UAA SERVICE ------------------------
+  - name: test1-uaa
+  # ------------------------------------------------------------
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security.json
+
+  # -------------------- DESTINATION SERVICE -------------------
+  - name: test1-dest
+  # ------------------------------------------------------------
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: destination
+      service-plan: lite
+      config:
+        init_data:
+          instance:
+            existing_destinations_policy: ignore
+            destinations:
+              - Name: test1-cfapi
+                Description: CF Cloud Controller API
+                URL: ${controller-url}
+                Type: HTTP
+                ProxyType: Internet
+                Authentication: OAuth2Password
+                tokenServiceURL: ${authorization-url}/oauth/token
+                clientId: cf
+                clientSecret:
+                User: <SetValueInCockpit>
+                Password: <SetValueInCockpit>
+              - Name: test1-API_SALES_ORDER_SRV
+                Description: SAP S/4HANA Cloud Sales Order (A2X)
+                URL: https://sandbox.api.sap.com
+                Type: HTTP
+                ProxyType: Internet
+                Authentication: NoAuthentication
+                URL.headers.APIKey: <SetValueInCockpit>
+                URL.headers.Application-Interface-Key: <SetValueInCockpit>
+                HTML5.DynamicDestination: true
+
+
+
+
+
+
+  # --------------------- REGISTRY SERVICE ---------------------
+  - name: test1-registry
+  # ------------------------------------------------------------
+    type: org.cloudfoundry.managed-service
+    requires:
+      - name: mtx-api
+    parameters:
+      service: saas-registry
+      service-plan: application
+      service-name: test1-registry
+      config:
+        xsappname: test1
+        appName: test1
+        displayName: 'App'
+        description: 'Business Application'
+        category: 'SaaS Multitenant Apps'
+        appUrls:
+          onSubscription: ~{mtx-api/mtx-url}/-/cds/saas-provisioning/tenant/{tenantId}
+          getDependencies: ~{mtx-api/mtx-url}/-/cds/saas-provisioning/dependencies
+          onSubscriptionAsync: false
+          onUnSubscriptionAsync: false
+          callbackTimeoutMillis: 300000
+
+  # ------------------- SERVICE MANAGER SERVICE ----------------
+  - name: test1-sm
+  # ------------------------------------------------------------
+    type: org.cloudfoundry.managed-service
+    requires:
+     - name: test1-uaa
+    parameters:
+       service: service-manager
+       service-plan: container
+       polling_timeout_seconds: 240
+       config:
+         acquireTimeoutMillis: max
+         polling_timeout_seconds: 480
+
+
